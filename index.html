@@ -172,3 +172,117 @@ const TT = {pt: {1:"Entradas · frios",2:"Entradas · fritos",4:"Pratos",5:"Pizz
  en: {1:"Starters · cold",2:"Starters · fried",4:"Signature mains",5:"Pizzas",6:"Desserts",8:"Sandwiches, burgers & milkshakes",10:"Signature drinks",11:"Classic drinks",12:"Batidinhas, caipirinhas & non-alcoholic",13:"Beers & softs"}};
 const NOTE = {pt: {8:"+ R$ 18,90 = combo: fritas e chope ou refri de gengibre da casa. Burger duplo: + R$ 13,90."}, en: {8:"+ R$ 18,90 = combo: fries and draft beer or house ginger soda. Double patty add-on: + R$ 13,90."}};
 
+const $ = id => document.getElementById(id), N = 16, L = 8, W = 1.5, H = 1.5 * 1419 / 1000;
+let panX = 0, panY = 0, lang = /^en/i.test(navigator.language) ? "en" : "pt", flipped = 0, focus = null, fp = 0, leaves = [], meshes = [], zoomMul = 1, asp = 1, ready;
+const TEX = {};
+document.getElementById("hero").style.backgroundImage = "url(" + HERO + ")";
+
+let GL = true; const renderer = (() => { try { return new THREE.WebGLRenderer({canvas: $("c3d"), antialias: true, alpha: true}); } catch (e) { GL = false; return {setPixelRatio(){}, setSize(){}, render(){}}; } })(); renderer.outputEncoding = THREE.sRGBEncoding;
+const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(30, 1, .1, 50), book = new THREE.Group(); scene.add(book); book.rotation.set(.1, 0, 0);
+const TN = 2 * Math.tan(THREE.MathUtils.degToRad(15));
+const loadTex = src => new Promise(r => new THREE.TextureLoader().load(src, t => { t.encoding = THREE.sRGBEncoding; t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; r(t); }));
+const texFor = l => Promise.all(PAGES[l].map(loadTex)); let curL = "pt";
+
+async function build(){
+  const T = await texFor("pt");
+  for (let k = 0; k < L; k++){
+    const g = new THREE.Group();
+    [0, 1].forEach(s => { const m = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({map: T[2 * k + s]})); m.position.x = W / 2; m.position.z = s ? -.003 : .003; if (s) m.rotation.y = Math.PI; g.add(m); meshes[2 * k + s] = m; });
+    g.position.z = -k * .01; book.add(g); leaves.push({g, cur: 0});
+  }
+  $("load").remove(); update();
+}
+ready = build();
+async function swapTex(){ await ready; if (curL === lang) return; const l = lang; curL = l; for (let p = 0; p < N; p++){ const t = await loadTex(PAGES[l][p]); if (curL !== l){ t.dispose(); return; } const m = meshes[p], old = m.material.map; m.material.map = t; m.material.needsUpdate = true; if (old) old.dispose(); } }
+
+const fmt = (s, o) => s.replace(/\{(\w)\}/g, (_, k) => o[k]);
+function update(){
+  const t = I[lang], a = flipped > 0 ? 2 * flipped - 1 : null, b = flipped < L ? 2 * flipped : null;
+  $("pg").textContent = focus ? fmt(t.pg, {a: fp + 1, n: N}) : a === null ? t.cover : b === null ? t.back : fmt(t.pgs, {a: a + 1, b: b + 1, n: N});
+  document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", String(!!focus && +c.dataset.p === fp)));
+  meshes.forEach((m, p) => m.material.color.setScalar(focus && (p === a || p === b) && p !== fp ? .45 : 1));
+  if (!$("fb").hidden) fbFill();
+}
+function showPage(p){ flipped = Math.ceil(p / 2); focus = p === 0 ? null : p % 2 ? "L" : "R"; fp = p; panX = panY = 0; book.rotation.set(.1, 0, 0); update(); }
+function go(d){ if (portrait()){ showPage(Math.max(0, Math.min(N - 1, fp + d))); return; } flipped = Math.max(0, Math.min(L, flipped + d)); focus = null; fp = flipped ? 2 * flipped - 1 : 0; update(); }
+CP.forEach(p => { const b = document.createElement("button"); b.type = "button"; b.className = "chip"; b.dataset.p = p; b.onclick = () => { showPage(p); history.replaceState(null, "", "#cardapio-" + SL[CP.indexOf(p)]); }; $("chips").append(b); });
+$("next").onclick = () => go(1); $("prev").onclick = () => go(-1);
+addEventListener("keydown", e => { if ($("dlg").open) return; if (e.key === "ArrowRight") go(1); if (e.key === "ArrowLeft") go(-1); });
+
+const cv = $("c3d"), pts = new Map(); let lx = 0, ly = 0, mv = 0, sx = 0, sy = 0, pd = 0;
+const portrait = () => asp < .9, zoomed = () => zoomMul < .85, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+function setZ(f){ zoomMul = clamp(zoomMul * f, .3, 1.6); if (!zoomed()) panX = panY = 0; cv.style.touchAction = zoomed() ? "none" : "pan-y"; }
+$("zin").onclick = () => setZ(.8); $("zout").onclick = () => setZ(1.25);
+addEventListener("keydown", e => { if (e.key === "+" || e.key === "=") setZ(.8); if (e.key === "-") setZ(1.25); });
+cv.addEventListener("pointerdown", e => { pts.set(e.pointerId, 1); lx = sx = e.clientX; ly = sy = e.clientY; mv = pts.size > 1 ? 99 : 0; cv.setPointerCapture(e.pointerId); });
+cv.addEventListener("pointermove", e => {
+  if (!pts.has(e.pointerId) || pts.size > 1) return;
+  const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY; mv += Math.abs(dx) + Math.abs(dy);
+  if (zoomed()){ const k = TN * camera.position.z / cv.clientHeight; panX = clamp(panX - dx * k, -2.5, 2.5); panY = clamp(panY + dy * k, -2.5, 2.5); }
+  else if (!portrait()){ book.rotation.y = clamp(book.rotation.y + dx * .006, -.8, .8); book.rotation.x = clamp(book.rotation.x + dy * .004, -.15, .7); }
+});
+cv.addEventListener("pointerup", e => {
+  const was = pts.size; pts.delete(e.pointerId); if (was > 1) return;
+  const dx = e.clientX - sx, dy = e.clientY - sy, r = cv.getBoundingClientRect();
+  if (mv < 6){ if (portrait() || !focus) go(e.clientX - r.left > r.width / 2 ? 1 : -1); else { focus = null; update(); } }
+  else if (portrait() && !zoomed() && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) go(dx < 0 ? 1 : -1);
+});
+cv.addEventListener("pointercancel", e => pts.delete(e.pointerId));
+const td = e => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+cv.addEventListener("touchstart", e => { if (e.touches.length === 2) pd = td(e); }, {passive: true});
+cv.addEventListener("touchmove", e => { if (e.touches.length === 2){ e.preventDefault(); const d = td(e); if (pd) setZ(pd / d); pd = d; } }, {passive: false});
+cv.addEventListener("touchend", () => { pd = 0; });
+cv.addEventListener("wheel", e => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); setZ(1 + e.deltaY * .002); }, {passive: false});
+function resize(){ const r = cv.parentElement.getBoundingClientRect(); renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5)); renderer.setSize(r.width, r.height, false); asp = r.width / r.height; camera.aspect = asp; camera.updateProjectionMatrix(); }
+addEventListener("resize", resize); resize();
+function fbFill(){ const a = flipped > 0 ? 2 * flipped - 1 : null, b = flipped < L ? 2 * flipped : null, ps = focus ? [fp] : [a, b].filter(v => v !== null);
+  $("fb").replaceChildren(...ps.map(p => { const i = new Image(1000, 1419); i.src = PAGES[lang][p]; i.alt = fmt(I[lang].pg, {a: p + 1, n: N}); return i; })); }
+function fb(on){ $("fb").hidden = !on; cv.style.visibility = on ? "hidden" : "visible"; if (on) fbFill(); }
+cv.addEventListener("webglcontextlost", e => { e.preventDefault(); fb(true); });
+cv.addEventListener("webglcontextrestored", () => fb(false));
+if (!GL) fb(true);
+const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+(function loop(){
+  requestAnimationFrame(loop);
+  leaves.forEach((l, k) => { l.cur += ((k < flipped ? -Math.PI : 0) - l.cur) * (calm ? 1 : .11); l.g.rotation.y = l.cur; l.g.position.z = (-2 * l.cur / Math.PI - 1) * k * .01; });
+  const tx = focus === "L" ? W / 2 : focus === "R" ? -W / 2 : flipped === 0 ? -W / 2 : flipped === L ? W / 2 : 0;
+  const single = focus || flipped === 0 || flipped === L, want = (single ? Math.max(1.75 / (TN * asp), 2.3 / TN) : Math.max(3.3 / (TN * asp), 2.5 / TN)) * zoomMul;
+  book.position.x += (tx - book.position.x) * .12; camera.position.z += (want - camera.position.z) * .12; camera.position.x += (panX - camera.position.x) * .15; camera.position.y += (panY - camera.position.y) * .15;
+  renderer.render(scene, camera);
+})();
+
+const esc = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+function renderText(){
+  $("tm").innerHTML = Object.keys(MENU[lang]).map(k => "<h3>" + TT[lang][k] + "</h3><ul>" + MENU[lang][k].map(i => "<li><b>" + esc(i[0]) + "</b><span>R$ " + i[1] + "</span>" + (i[2] ? "<p>" + esc(i[2]) + "</p>" : "") + "</li>").join("") + "</ul>" + (NOTE[lang][k] ? "<p class='note'>" + NOTE[lang][k] + "</p>" : "")).join("");
+}
+function renderContact(){
+  const t = I[lang], rows = [], A = (h, x, ext) => "<a href='" + h + "'" + (ext ? " target='_blank' rel='noopener'" : "") + ">" + x + "</a>";
+  $("addr").innerHTML = SITE.address.join("<br>");
+  $("ctas").innerHTML = A(SITE.maps, t.dir, 1).replace("<a ", "<a class='btn' ") + A(SITE.instagram, "@rivierabarsp", 1).replace("<a ", "<a class='btn line' ") + (SITE.reservations ? A(SITE.reservations, t.res, 1).replace("<a ", "<a class='btn' ") : "") + (SITE.linktree ? A(SITE.linktree, t.lk, 1).replace("<a ", "<a class='btn line' ") : "");
+  document.querySelectorAll("#hres, #hres2").forEach(hr => { hr.hidden = !SITE.reservations; hr.href = SITE.reservations || "#"; });
+  if (SITE.hours[lang]) rows.push("<li><b>" + t.hrs + "</b> " + esc(SITE.hours[lang]) + "</li>");
+  if (SITE.whatsapp) rows.push("<li><b>WhatsApp</b> " + A("https://wa.me/" + SITE.whatsapp.replace(/\D/g, ""), SITE.whatsapp, 1) + "</li>");
+  if (SITE.phone) rows.push("<li><b>Tel</b> " + A("tel:" + SITE.phone.replace(/[^\d+]/g, ""), SITE.phone) + "</li>");
+  if (SITE.email) rows.push("<li><b>E-mail</b> " + A("mailto:" + SITE.email, SITE.email) + "</li>");
+  $("ct").innerHTML = rows.join("");
+}
+function setLang(l){
+  lang = l; const t = I[l]; document.documentElement.lang = l === "pt" ? "pt-BR" : "en";
+  document.querySelectorAll("[data-i]").forEach(e => e.textContent = t[e.dataset.i]);
+  document.querySelectorAll(".chip").forEach((c, i) => c.textContent = t.cats[i]);
+  document.querySelectorAll(".lg").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.l === l)));
+  ["prev:pv", "next:nx", "zin:zi", "zout:zo"].forEach(s => { const [id, k] = s.split(":"); $(id).setAttribute("aria-label", t[k]); }); $("c3d").setAttribute("aria-label", t.cvl);
+  renderText(); renderContact(); update(); swapTex();
+}
+document.querySelectorAll(".lg").forEach(b => b.onclick = () => setLang(b.dataset.l));
+setLang(lang);
+function fromHash(){ const m = location.hash.match(/^#cardapio-([a-z]+)$/), i = m ? SL.indexOf(m[1]) : -1; if (i >= 0){ showPage(CP[i]); $("cardapio").scrollIntoView(); } }
+fromHash(); addEventListener("hashchange", fromHash);
+
+const dlg = $("dlg");
+function zfill(){ const a = flipped > 0 ? 2 * flipped - 1 : null, b = flipped < L ? 2 * flipped : null, ps = focus ? [fp] : [a, b].filter(v => v !== null);
+  $("zi").replaceChildren(...ps.map(p => { const i = new Image(1000, 1419); i.src = PAGES[lang][p]; i.alt = fmt(I[lang].pg, {a: p + 1, n: N}); return i; })); $("zt").textContent = $("pg").textContent; }
+$("zoom").onclick = () => { zfill(); dlg.showModal(); };
+$("zp").onclick = () => { go(-1); zfill(); }; $("zn").onclick = () => { go(1); zfill(); }; $("zc").onclick = () => dlg.close();
+dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+</script>
